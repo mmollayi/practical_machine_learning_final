@@ -1,0 +1,157 @@
+---
+title: "Predicting if Dumbbell Biceps Curls Were Done Properly Using Accelerometers Data"
+author: "Mohsen Mollayi"
+date: "December 13, 2016"
+output:
+  html_document:
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background and Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. they were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D), and throwing the hips to the front (Class E). Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Our goal will be to predict the manner in which the exercise was performed using provided data. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+## Getting and Cleaning the data
+
+I start by loading the required packages:
+
+```{r, message=FALSE}
+library(caret)
+library(rpart)
+library(randomForest)
+```
+
+And then loading the training and testing datasets:
+
+```{r}
+NA_strings <- c("NA","#DIV/0!","")
+orig_train <- read.csv("pml-training.csv", na.strings = NA_strings)
+testing <- read.csv("pml-testing.csv", na.strings = NA_strings)
+```
+
+Next I explore the training set and choose potential variables to predict the outcome with. The training dataset has 19622 observations and 160 variables. First seven variables aren't measurements related to the outcome, So we can safely exclude them.
+
+```{r}
+training <- orig_train[, -c(1:7)]
+```
+
+Next let's search for the distribution of `NA`s in the data. Variables with lots of `NA`s will be excluded.
+
+```{r}
+NA_count <- sapply(training, function(x) sum(is.na(x)))
+NA_count
+```
+
+So either a variable contains no `NA`s or it's mostly `NA`s. I will Just keep those who have zero `NA`s.
+
+```{r}
+training <- training[, NA_count == 0]
+dim(training)
+```
+
+I will use the 53 remaining variables as predictors. Finaly divide the training data into two sets: a training set and a validation set:
+
+```{r}
+set.seed(1312)
+train_idx <- createDataPartition(training$class, p = 0.7, list = FALSE)
+training <- training[train_idx, ]
+validation <- training[-train_idx, ]
+```
+
+## Model building
+
+After reading the original article, I decided to use Random Forest algorithm as the original authers did and obtained accurate results. But first I will use a classification tree. Since variable transformation is not relevant to build model with tree based methods, I won't transform any variable.
+
+### Classification Trees
+
+To predict with a classication tree, I use rpart package. First let's use `rpart` function without any tuning:
+
+```{r}
+set.seed(1312)
+mod_rpart <- rpart(classe ~ ., data = training, method = "class")
+```
+
+And then apply the model to the validation set:
+
+```{r}
+pred_rpart <- predict(mod_rpart, newdata = validation, type = "class")
+confusionMatrix(pred_rpart, validation$classe)
+```
+
+As can be seen, the estimated accuracy of the model is 75%. To tune the rpart model, the most important parameter is the complexity parameter. We can use cross validation to choose this parameter.
+
+```{r}
+set.seed(1312)
+tune_cp_rpart <- train(classe ~ ., data = training, method = "rpart",
+                       trControl = trainControl(method = "cv", number = 10),
+                       tuneGrid = expand.grid(cp = seq(0, 0.1, by = 0.01)))
+tune_cp_rpart
+plot(tune_cp_rpart)
+```
+
+Looking at the plot above, the best accuracy obtained with `cp = 0`. This is the value chosen for the model by the `train` function. Next I will try to tune `maxdepth` parameter also by using cross validation. But first I want to check it's value in untuned model. rpart has an unexported function `tree.depth` that gives the depth of each node in the vector of node numbers passed on to it.
+
+```{r}
+nodes <- as.numeric(rownames(mod_rpart$frame))
+max(rpart:::tree.depth(nodes))
+
+set.seed(1312)
+tune_maxdepth_rpart <- train(classe ~ ., data = training, method = "rpart2",
+                             trControl = trainControl(method = "cv", number = 10),
+                             tuneGrid = expand.grid(maxdepth = seq(12, 30, by = 2)))
+tune_maxdepth_rpart
+plot(tune_maxdepth_rpart)
+```
+
+Based on the plot above, the optimal value for `maxdepth` parameter seems to be 24. This is also the value chosen by the `train` function. But the parameter value in the untuned model was 13.
+
+Next let's build a tree model with the `rpart` function again. But this time with tuning parameters chosen at the previous steps:
+
+```{r}
+set.seed(1312)
+mod_rpart_tuned <- rpart(classe ~ ., data = training, method = "class",
+                         control = rpart.control(cp = 0, maxdepth = 24))
+
+```
+
+Now we can apply the prediction model to the validation set.
+
+```{r}
+pred_rpart_tuned <- predict(mod_rpart_tuned, newdata = validation, type = "class")
+confusionMatrix(pred_rpart_tuned, validation$classe)
+```
+
+According to the results, the estimated prediction accuracy improved by 21% which is remarkable.
+
+### Random Forests
+
+The only tuning parameter that I pass to the `train` function is the number of folds for cross validation.
+
+```{r}
+set.seed(1312)
+mod_rf <- train(classe ~ ., data = training, 
+                trControl = trainControl(method = "cv", number =3))
+```
+
+Apply the model to the validation set.
+
+```{r}
+pred_rf <- predict(mod_rf, newdata = validation)
+confusionMatrix(pred_rf, validation$classe)
+```
+
+The prediction accuracy is already high and we can apply this model to the testing data. The expected out of sample error is 0 based on this model.
+
+## Prediction on the Test Data
+
+Finally let's apply the Random Forest model to the testing data:
+
+```{r}
+predict(mod_rf, newdata = testing)
+```
